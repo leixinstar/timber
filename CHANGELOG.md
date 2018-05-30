@@ -1,6 +1,134 @@
 Change Log
 ==========
 
+Version 4.7.0 *(2018-03-27)*
+----------------------------
+
+ * Fix: Support lint version 26.1.0.
+ * Fix: Check single-argument log method in TimberExceptionLogging.
+
+
+Version 4.6.1 *(2018-02-12)*
+----------------------------
+
+ * Fix: Lint checks now handle more edge cases around exception and message source.
+ * Fix: Useless `BuildConfig` class is no longer included.
+
+
+Version 4.6.0 *(2017-10-30)*
+----------------------------
+
+ * New: Lint checks have been ported to UAST, their stability improved, and quick-fix suggestions added. They require Android Gradle Plugin 3.0 or newer to run.
+ * New: Added nullability annotations for Kotlin users.
+ * Fix: Tag length truncation no longer occurs on API 24 or newer as the system no longer has a length restriction.
+ * Fix: Handle when a `null` array is supplied for the message arguments. This can occur when using various bytecode optimization tools.
+
+
+Version 4.5.1 *(2017-01-20)*
+----------------------------
+
+ * Fix: String formatting lint check now correctly works with dates.
+
+
+Version 4.5.0 *(2017-01-09)*
+----------------------------
+
+ * New: Automatically truncate class name tags to Android's limit of 23 characters.
+ * New: Lint check for detecting null/empty messages or using the exception message when logging an
+   exception. Use the single-argument logging overloads instead.
+ * Fix: Correct NPE in lint check when using String.format.
+
+
+Version 4.4.0 *(2016-12-06)*
+----------------------------
+
+ * New: `Tree.formatMessage` method allows customization of message formatting and rendering.
+ * New: Lint checks ported to new IntelliJ PSI infrastructure.
+
+
+Version 4.3.1 *(2016-09-19)*
+----------------------------
+
+ * New: Add `isLoggable` convenience method which also provides the tag.
+
+
+Version 4.3.0 *(2016-08-18)*
+----------------------------
+
+ * New: Overloads for all log methods which accept only a `Throwable` without a message.
+
+
+Version 4.2.0 *(2016-08-12)*
+----------------------------
+
+ * New: `Timber.plant` now has a varargs overload for planting multiple trees at once.
+ * New: minSdkVersion is now 9 because reasons.
+ * Fix: Consume explicitly specified tag even if the message is determined as not loggable (due to level).
+ * Fix: Allow lint checks to run when `Timber.tag(..).v(..)`-style logging is used.
+
+
+Version 4.1.2 *(2016-03-30)*
+----------------------------
+
+ * Fix: Tag-length lint check now only triggers on calls to `Timber`'s `tag` method. Previously it would
+   match _any_ `tag` method and flag arguments longer than 23 characters.
+
+
+Version 4.1.1 *(2016-02-19)*
+----------------------------
+
+ * New: Add method for retreiving the number of installed trees.
+
+
+Version 4.1.0 *(2015-10-19)*
+----------------------------
+
+ * New: Consumer ProGuard rule automatically suppresses a warning for the use `@NonNls` on the 'message'
+   argument for logging method. The warning was only for users running ProGuard and can safely be ignored.
+ * New: Static `log` methods which accept a priority as a first argument makes dynamic logging at different
+   levels easier to support.
+ * Fix: Replace internal use of `Log.getStackTraceString` with our own implementation. This ensures that
+   `UnknownHostException` errors are logged, which previously were suppressed.
+ * Fix: 'BinaryOperationInTimber' lint rule now only triggers for string concatenation.
+
+
+Version 4.0.1 *(2015-10-07)*
+----------------------------
+
+ * Fix: TimberArgTypes lint rule now allows booleans and numbers in '%s' format markers.
+ * Fix: Lint rules now support running on Java 7 VMs.
+
+
+Version 4.0.0 *(2015-10-07)*
+----------------------------
+
+ * New: Library is now an .aar! This means the lint rules are automatically applied to consuming
+   projects.
+ * New: `Tree.forest()` returns an immutable copy of all planted trees.
+ * Fix: Ensure thread safety when logging and adding or removing trees concurrently.
+
+
+Version 3.1.0 *(2015-05-11)*
+----------------------------
+
+ * New: `Tree.isLoggable` method allows a tree to determine whether a statement should be logged
+   based on its priority. Defaults to logging all levels.
+
+
+Version 3.0.2 *(2015-05-01)*
+----------------------------
+
+ * Fix: Strip multiple anonymous class markers (e.g., `$1$2`) from class names when `DebugTree`
+   is creating an inferred tag.
+
+
+Version 3.0.1 *(2015-04-17)*
+----------------------------
+
+ * Fix: String formatting is now always applied when arguments are present. Previously it would
+   only trigger when an exception was included.
+
+
 Version 3.0.0 *(2015-04-16)*
 ----------------------------
 

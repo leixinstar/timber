@@ -3,273 +3,340 @@ package timber.lint;
 import com.android.annotations.NonNull;
 import com.android.annotations.Nullable;
 import com.android.tools.lint.checks.StringFormatDetector;
-import com.android.tools.lint.client.api.JavaParser;
+import com.android.tools.lint.client.api.JavaEvaluator;
 import com.android.tools.lint.detector.api.Category;
-import com.android.tools.lint.detector.api.ClassContext;
 import com.android.tools.lint.detector.api.Detector;
 import com.android.tools.lint.detector.api.Implementation;
 import com.android.tools.lint.detector.api.Issue;
 import com.android.tools.lint.detector.api.JavaContext;
+import com.android.tools.lint.detector.api.LintFix;
+import com.android.tools.lint.detector.api.LintUtils;
 import com.android.tools.lint.detector.api.Scope;
 import com.android.tools.lint.detector.api.Severity;
-import com.android.tools.lint.detector.api.Speed;
-import lombok.ast.AstVisitor;
-import lombok.ast.BinaryExpression;
-import lombok.ast.BinaryOperator;
-import lombok.ast.BooleanLiteral;
-import lombok.ast.CharLiteral;
-import lombok.ast.Expression;
-import lombok.ast.ExpressionStatement;
-import lombok.ast.FloatingPointLiteral;
-import lombok.ast.If;
-import lombok.ast.InlineIfExpression;
-import lombok.ast.IntegralLiteral;
-import lombok.ast.MethodInvocation;
-import lombok.ast.Node;
-import lombok.ast.NullLiteral;
-import lombok.ast.StrictListAccessor;
-import lombok.ast.StringLiteral;
-import lombok.ast.VariableReference;
-import org.objectweb.asm.tree.ClassNode;
-import org.objectweb.asm.tree.MethodInsnNode;
-import org.objectweb.asm.tree.MethodNode;
-
+import com.intellij.psi.PsiClass;
+import com.intellij.psi.PsiClassType;
+import com.intellij.psi.PsiElement;
+import com.intellij.psi.PsiField;
+import com.intellij.psi.PsiLiteralExpression;
+import com.intellij.psi.PsiMethod;
+import com.intellij.psi.PsiMethodCallExpression;
+import com.intellij.psi.PsiParameter;
+import com.intellij.psi.PsiType;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Iterator;
+import java.util.Calendar;
+import java.util.Date;
 import java.util.List;
 import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import org.jetbrains.uast.UBinaryExpression;
+import org.jetbrains.uast.UCallExpression;
+import org.jetbrains.uast.UElement;
+import org.jetbrains.uast.UExpression;
+import org.jetbrains.uast.UIfExpression;
+import org.jetbrains.uast.ULiteralExpression;
+import org.jetbrains.uast.UMethod;
+import org.jetbrains.uast.UQualifiedReferenceExpression;
+import org.jetbrains.uast.USimpleNameReferenceExpression;
+import org.jetbrains.uast.UastBinaryOperator;
+import org.jetbrains.uast.util.UastExpressionUtils;
 
-import static com.android.SdkConstants.GET_STRING_METHOD;
-import static com.android.tools.lint.client.api.JavaParser.TYPE_BOOLEAN;
-import static com.android.tools.lint.client.api.JavaParser.TYPE_BYTE;
-import static com.android.tools.lint.client.api.JavaParser.TYPE_CHAR;
-import static com.android.tools.lint.client.api.JavaParser.TYPE_DOUBLE;
-import static com.android.tools.lint.client.api.JavaParser.TYPE_FLOAT;
-import static com.android.tools.lint.client.api.JavaParser.TYPE_INT;
-import static com.android.tools.lint.client.api.JavaParser.TYPE_LONG;
-import static com.android.tools.lint.client.api.JavaParser.TYPE_NULL;
-import static com.android.tools.lint.client.api.JavaParser.TYPE_OBJECT;
-import static com.android.tools.lint.client.api.JavaParser.TYPE_SHORT;
-import static com.android.tools.lint.client.api.JavaParser.TYPE_STRING;
+import static com.android.tools.lint.client.api.JavaEvaluatorKt.TYPE_BOOLEAN;
+import static com.android.tools.lint.client.api.JavaEvaluatorKt.TYPE_BYTE;
+import static com.android.tools.lint.client.api.JavaEvaluatorKt.TYPE_CHAR;
+import static com.android.tools.lint.client.api.JavaEvaluatorKt.TYPE_DOUBLE;
+import static com.android.tools.lint.client.api.JavaEvaluatorKt.TYPE_FLOAT;
+import static com.android.tools.lint.client.api.JavaEvaluatorKt.TYPE_INT;
+import static com.android.tools.lint.client.api.JavaEvaluatorKt.TYPE_LONG;
+import static com.android.tools.lint.client.api.JavaEvaluatorKt.TYPE_NULL;
+import static com.android.tools.lint.client.api.JavaEvaluatorKt.TYPE_OBJECT;
+import static com.android.tools.lint.client.api.JavaEvaluatorKt.TYPE_SHORT;
+import static com.android.tools.lint.client.api.JavaEvaluatorKt.TYPE_STRING;
+import static com.android.tools.lint.detector.api.ConstantEvaluator.evaluateString;
+import static org.jetbrains.uast.UastBinaryOperator.PLUS;
+import static org.jetbrains.uast.UastBinaryOperator.PLUS_ASSIGN;
+import static org.jetbrains.uast.UastLiteralUtils.isStringLiteral;
+import static org.jetbrains.uast.UastUtils.evaluateString;
 
-public final class WrongTimberUsageDetector extends Detector implements Detector.JavaScanner,
-    Detector.ClassScanner {
-  @NonNull @Override public Speed getSpeed() {
-    return Speed.NORMAL;
-  }
-
-  @Override public List<String> getApplicableCallNames() {
-    return Arrays.asList("v", "d", "i", "w", "e", "wtf");
-  }
+public final class WrongTimberUsageDetector extends Detector implements Detector.UastScanner {
+  private final static String GET_STRING_METHOD = "getString";
+  private final static String TIMBER_TREE_LOG_METHOD_REGEXP = "(v|d|i|w|e|wtf)";
 
   @Override public List<String> getApplicableMethodNames() {
     return Arrays.asList("tag", "format", "v", "d", "i", "w", "e", "wtf");
   }
 
-  @Override public void checkCall(@NonNull ClassContext context, @NonNull ClassNode classNode,
-      @NonNull MethodNode method, @NonNull MethodInsnNode call) {
-    String owner = call.owner;
-    if (owner.startsWith("android/util/Log")) {
-      context.report(ISSUE_LOG, method, call, context.getLocation(call),
-          "Using 'Log' instead of 'Timber'");
-    }
-  }
+  @Override public void visitMethod(JavaContext context, UCallExpression call, PsiMethod method) {
+    String methodName = call.getMethodName();
+    JavaEvaluator evaluator = context.getEvaluator();
 
-  @Override public void visitMethod(@NonNull JavaContext context, AstVisitor visitor,
-      @NonNull MethodInvocation node) {
-    String methodName = node.astName().getDescription();
-    if ("format".equals(methodName)) {
-      if (!(node.astOperand() instanceof VariableReference)) {
-        return;
-      }
-      VariableReference ref = (VariableReference) node.astOperand();
-      if (!"String".equals(ref.astIdentifier().astValue())) {
-        return;
-      }
-      // Found a String.format call
-      // Look outside to see if we inside of a Timber call
-      Node current = node.getParent();
-      while (current != null && !(current instanceof ExpressionStatement)) {
-        current = current.getParent();
-      }
-      if (current == null) {
-        return;
-      }
-      ExpressionStatement statement = (ExpressionStatement) current;
-      if (!statement.toString().startsWith("Timber.")) {
-        return;
-      }
-      context.report(ISSUE_FORMAT, node, context.getLocation(node),
-          "Using 'String#format' inside of 'Timber'");
-    } else if ("tag".equals(methodName)) {
-      Node argument = node.astArguments().iterator().next();
-      String tag = findLiteralValue(context, argument);
-      if (tag.length() > 23) {
-        String message = String.format(
-            "The logging tag can be at most 23 characters, was %1$d (%2$s)",
-            tag.length(), tag);
-        context.report(ISSUE_TAG_LENGTH, node, context.getLocation(node), message);
-      }
-    } else {
-      if (node.astOperand() instanceof VariableReference) {
-        VariableReference ref = (VariableReference) node.astOperand();
-        if (!"Timber".equals(ref.astIdentifier().astValue())) {
-          return;
-        }
-        checkThrowablePosition(context, node);
-        checkArguments(context, node);
-      }
-    }
-  }
-
-  private static void checkArguments(JavaContext context, MethodInvocation node) {
-    StrictListAccessor<Expression, MethodInvocation> astArguments = node.astArguments();
-    Iterator<Expression> iterator = astArguments.iterator();
-    if (!iterator.hasNext()) {
+    if ("format".equals(methodName) && evaluator.isMemberInClass(method, "java.lang.String")) {
+      checkNestedStringFormat(context, call);
       return;
     }
-    int startIndexOfArguments = 1;
-    Expression formatStringArg = iterator.next();
-    if (formatStringArg instanceof VariableReference) {
-      if (isSubclassOf(context, (VariableReference) formatStringArg, Throwable.class)) {
-        formatStringArg = iterator.next();
-        startIndexOfArguments++;
+    // As of API 24, Log tags are no longer limited to 23 chars.
+    if ("tag".equals(methodName)
+        && evaluator.isMemberInClass(method, "timber.log.Timber")
+        && context.getMainProject().getMinSdk() <= 23) {
+      checkTagLength(context, call);
+      return;
+    }
+    if (evaluator.isMemberInClass(method, "android.util.Log")) {
+      LintFix fix = quickFixIssueLog(call);
+      context.report(ISSUE_LOG, call, context.getLocation(call), "Using 'Log' instead of 'Timber'",
+          fix);
+      return;
+    }
+    // Handles Timber.X(..) and Timber.tag(..).X(..) where X in (v|d|i|w|e|wtf).
+    if (evaluator.isMemberInClass(method, "timber.log.Timber") //
+        || evaluator.isMemberInClass(method, "timber.log.Timber.Tree")) {
+      checkMethodArguments(context, call);
+      checkFormatArguments(context, call);
+      checkExceptionLogging(context, call);
+    }
+  }
+
+  private void checkNestedStringFormat(JavaContext context, UCallExpression call) {
+    UElement current = call;
+    while (true) {
+      current = LintUtils.skipParentheses(current.getUastParent());
+      if (current == null || current instanceof UMethod) {
+        // Reached AST root or code block node; String.format not inside Timber.X(..).
+        return;
+      }
+      if (UastExpressionUtils.isMethodCall(current)) {
+        UCallExpression maybeTimberLogCall = (UCallExpression) current;
+        JavaEvaluator evaluator = context.getEvaluator();
+        PsiMethod psiMethod = maybeTimberLogCall.resolve();
+        if (Pattern.matches(TIMBER_TREE_LOG_METHOD_REGEXP, psiMethod.getName())
+            && evaluator.isMemberInClass(psiMethod, "timber.log.Timber")) {
+          LintFix fix = quickFixIssueFormat(call);
+          context.report(ISSUE_FORMAT, call, context.getLocation(call),
+              "Using 'String#format' inside of 'Timber'", fix);
+          return;
+        }
       }
     }
+  }
 
-    String formatString = findLiteralValue(context, formatStringArg);
+  private void checkTagLength(JavaContext context, UCallExpression call) {
+    List<UExpression> arguments = call.getValueArguments();
+    UExpression argument = arguments.get(0);
+    String tag = evaluateString(context, argument, true);
+    if (tag != null && tag.length() > 23) {
+      String message =
+          String.format("The logging tag can be at most 23 characters, was %1$d (%2$s)",
+              tag.length(), tag);
+      LintFix fix = quickFixIssueTagLength(argument, tag);
+      context.report(ISSUE_TAG_LENGTH, argument, context.getLocation(argument), message, fix);
+    }
+  }
+
+  private static void checkFormatArguments(JavaContext context, UCallExpression call) {
+    List<UExpression> arguments = call.getValueArguments();
+    int numArguments = arguments.size();
+    if (numArguments == 0) {
+      return;
+    }
+
+    int startIndexOfArguments = 1;
+    UExpression formatStringArg = arguments.get(0);
+    if (isSubclassOf(context, formatStringArg, Throwable.class)) {
+      if (numArguments == 1) {
+        return;
+      }
+      formatStringArg = arguments.get(1);
+      startIndexOfArguments++;
+    }
+
+    String formatString = evaluateString(context, formatStringArg, true);
     // We passed for example a method call
     if (formatString == null) {
       return;
     }
-    int argumentCount = getFormatArgumentCount(formatString);
-    int passedArgCount = astArguments.size() - startIndexOfArguments;
-    if (argumentCount < passedArgCount) {
-      context.report(ISSUE_ARG_COUNT, node, context.getLocation(node), String.format(
-              "Wrong argument count, format string `%1$s` requires "
-                  + "`%2$d` but format call supplies `%3$d`", formatString, argumentCount,
-              passedArgCount));
+
+    int formatArgumentCount = getFormatArgumentCount(formatString);
+    int passedArgCount = numArguments - startIndexOfArguments;
+    if (formatArgumentCount < passedArgCount) {
+      context.report(ISSUE_ARG_COUNT, call, context.getLocation(call), String.format(
+          "Wrong argument count, format string `%1$s` requires "
+              + "`%2$d` but format call supplies `%3$d`", formatString, formatArgumentCount,
+          passedArgCount));
       return;
     }
 
-    if (argumentCount == 0) {
+    if (formatArgumentCount == 0) {
       return;
     }
 
     List<String> types = getStringArgumentTypes(formatString);
-    Expression argument = null;
+    UExpression argument = null;
+    int argumentIndex = startIndexOfArguments;
     boolean valid;
     for (int i = 0; i < types.size(); i++) {
       String formatType = types.get(i);
-      if (iterator.hasNext()) {
-        argument = iterator.next();
+      if (argumentIndex != numArguments) {
+        argument = arguments.get(argumentIndex++);
       } else {
-        context.report(ISSUE_ARG_COUNT, node, context.getLocation(node), String.format(
-                "Wrong argument count, format string `%1$s` requires "
-                    + "`%2$d` but format call supplies `%3$d`", formatString, argumentCount,
-                passedArgCount));
+        context.report(ISSUE_ARG_COUNT, call, context.getLocation(call), String.format(
+            "Wrong argument count, format string `%1$s` requires "
+                + "`%2$d` but format call supplies `%3$d`", formatString, formatArgumentCount,
+            passedArgCount));
+      }
+
+      Class type = getType(argument);
+      if (type == null) {
+        continue;
       }
 
       char last = formatType.charAt(formatType.length() - 1);
       if (formatType.length() >= 2
           && Character.toLowerCase(formatType.charAt(formatType.length() - 2)) == 't') {
         // Date time conversion.
-        // TODO
-        continue;
-      }
-      Class type = getType(context, argument);
-      if (type != null) {
         switch (last) {
-          case 'b':
-          case 'B':
-            valid = type == Boolean.TYPE;
-            break;
-          case 'x':
-          case 'X':
-          case 'd':
-          case 'o':
-          case 'e':
-          case 'E':
-          case 'f':
-          case 'g':
-          case 'G':
-          case 'a':
-          case 'A':
-            valid = type == Integer.TYPE
-                || type == Float.TYPE
-                || type == Double.TYPE
-                || type == Long.TYPE
-                || type == Byte.TYPE
-                || type == Short.TYPE;
-            break;
-          case 'c':
-          case 'C':
-            valid = type == Character.TYPE;
-            break;
-          case 'h':
+          // time
           case 'H':
-          case 's':
+          case 'I':
+          case 'k':
+          case 'l':
+          case 'M':
           case 'S':
-            valid = type != Boolean.TYPE && !Number.class.isAssignableFrom(type);
+          case 'L':
+          case 'N':
+          case 'p':
+          case 'z':
+          case 'Z':
+          case 's':
+          case 'Q':
+            // date
+          case 'B':
+          case 'b':
+          case 'h':
+          case 'A':
+          case 'a':
+          case 'C':
+          case 'Y':
+          case 'y':
+          case 'j':
+          case 'm':
+          case 'd':
+          case 'e':
+            // date/time
+          case 'R':
+          case 'T':
+          case 'r':
+          case 'D':
+          case 'F':
+          case 'c':
+            valid = type == Integer.TYPE || type == Calendar.class || type == Date.class;
+            if (!valid) {
+              String message = String.format(
+                  "Wrong argument type for date formatting argument '#%1$d' "
+                      + "in `%2$s`: conversion is '`%3$s`', received `%4$s` "
+                      + "(argument #%5$d in method call)", i + 1, formatString, formatType,
+                  type.getSimpleName(), startIndexOfArguments + i + 1);
+              context.report(ISSUE_ARG_TYPES, call, context.getLocation(argument), message);
+            }
             break;
           default:
-            valid = true;
+            String message = String.format("Wrong suffix for date format '#%1$d' "
+                    + "in `%2$s`: conversion is '`%3$s`', received `%4$s` "
+                    + "(argument #%5$d in method call)", i + 1, formatString, formatType,
+                type.getSimpleName(), startIndexOfArguments + i + 1);
+            context.report(ISSUE_FORMAT, call, context.getLocation(argument), message);
         }
-        if (!valid) {
-          String message = String.format("Wrong argument type for formatting argument '#%1$d' "
-                  + "in `%2$s`: conversion is '`%3$s`', received `%4$s` "
-                  + "(argument #%5$d in method call)", i, formatString, formatType,
-              type.getSimpleName(), startIndexOfArguments + i + 1);
-          context.report(ISSUE_ARG_TYPES, node, context.getLocation(argument), message);
-        }
+        continue;
+      }
+      switch (last) {
+        case 'b':
+        case 'B':
+          valid = type == Boolean.TYPE;
+          break;
+        case 'x':
+        case 'X':
+        case 'd':
+        case 'o':
+        case 'e':
+        case 'E':
+        case 'f':
+        case 'g':
+        case 'G':
+        case 'a':
+        case 'A':
+          valid = type == Integer.TYPE
+              || type == Float.TYPE
+              || type == Double.TYPE
+              || type == Long.TYPE
+              || type == Byte.TYPE
+              || type == Short.TYPE;
+          break;
+        case 'c':
+        case 'C':
+          valid = type == Character.TYPE;
+          break;
+        case 'h':
+        case 'H':
+          valid = type != Boolean.TYPE && !Number.class.isAssignableFrom(type);
+          break;
+        case 's':
+        case 'S':
+        default:
+          valid = true;
+      }
+      if (!valid) {
+        String message = String.format("Wrong argument type for formatting argument '#%1$d' "
+                + "in `%2$s`: conversion is '`%3$s`', received `%4$s` "
+                + "(argument #%5$d in method call)", i + 1, formatString, formatType,
+            type.getSimpleName(), startIndexOfArguments + i + 1);
+        context.report(ISSUE_ARG_TYPES, call, context.getLocation(argument), message);
       }
     }
   }
 
-  private static Class<?> getType(JavaContext context, Expression expression) {
+  private static Class<?> getType(UExpression expression) {
     if (expression == null) {
       return null;
     }
-
-    if (expression instanceof MethodInvocation) {
-      MethodInvocation method = (MethodInvocation) expression;
-      String methodName = method.astName().astValue();
+    if (expression instanceof PsiMethodCallExpression) {
+      PsiMethodCallExpression call = (PsiMethodCallExpression) expression;
+      PsiMethod method = call.resolveMethod();
+      if (method == null) {
+        return null;
+      }
+      String methodName = method.getName();
       if (methodName.equals(GET_STRING_METHOD)) {
         return String.class;
       }
-    } else if (expression instanceof StringLiteral) {
-      return String.class;
-    } else if (expression instanceof IntegralLiteral) {
-      return Integer.TYPE;
-    } else if (expression instanceof FloatingPointLiteral) {
-      return Float.TYPE;
-    } else if (expression instanceof CharLiteral) {
-      return Character.TYPE;
-    } else if (expression instanceof BooleanLiteral) {
-      return Boolean.TYPE;
-    } else if (expression instanceof NullLiteral) {
-      return Object.class;
+    } else if (expression instanceof PsiLiteralExpression) {
+      PsiLiteralExpression literalExpression = (PsiLiteralExpression) expression;
+      PsiType expressionType = literalExpression.getType();
+      if (LintUtils.isString(expressionType)) {
+        return String.class;
+      } else if (expressionType == PsiType.INT) {
+        return Integer.TYPE;
+      } else if (expressionType == PsiType.FLOAT) {
+        return Float.TYPE;
+      } else if (expressionType == PsiType.CHAR) {
+        return Character.TYPE;
+      } else if (expressionType == PsiType.BOOLEAN) {
+        return Boolean.TYPE;
+      } else if (expressionType == PsiType.NULL) {
+        return Object.class;
+      }
     }
 
-    if (context != null) {
-      JavaParser.TypeDescriptor type = context.getType(expression);
-      if (type != null) {
-        Class<?> typeClass = getTypeClass(type);
-        if (typeClass != null) {
-          return typeClass;
-        } else {
-          return Object.class;
-        }
-      }
+    PsiType type = expression.getExpressionType();
+    if (type != null) {
+      Class<?> typeClass = getTypeClass(type);
+      return typeClass != null ? typeClass : Object.class;
     }
 
     return null;
   }
 
-  private static Class<?> getTypeClass(@Nullable JavaParser.TypeDescriptor type) {
+  private static Class<?> getTypeClass(@Nullable PsiType type) {
     if (type != null) {
-      return getTypeClass(type.getName());
+      return getTypeClass(type.getCanonicalText());
     }
     return null;
   }
@@ -308,6 +375,8 @@ public final class WrongTimberUsageDetector extends Detector implements Detector
       } else if ("java.lang.Float".equals(typeClassName) || "java.lang.Double".equals(
           typeClassName)) {
         return Float.TYPE;
+      } else if ("java.lang.Boolean".equals(typeClassName)) {
+        return Boolean.TYPE;
       } else {
         return null;
       }
@@ -315,24 +384,27 @@ public final class WrongTimberUsageDetector extends Detector implements Detector
       return Byte.TYPE;
     } else if (typeClassName.equals(TYPE_SHORT)) {
       return Short.TYPE;
+    } else if ("Date".equals(typeClassName) || "java.util.Date".equals(typeClassName)) {
+      return Date.class;
+    } else if ("Calendar".equals(typeClassName) || "java.util.Calendar".equals(typeClassName)) {
+      return Calendar.class;
     } else {
       return null;
     }
   }
 
-  private static boolean isSubclassOf(JavaContext context, VariableReference variableReference,
-      Class clazz) {
-    JavaParser.ResolvedNode resolved = context.resolve(variableReference);
-    if (resolved instanceof JavaParser.ResolvedVariable) {
-      JavaParser.ResolvedVariable resolvedVariable = (JavaParser.ResolvedVariable) resolved;
-      JavaParser.ResolvedClass typeClass = resolvedVariable.getType().getTypeClass();
-      return (typeClass != null && typeClass.isSubclassOf(clazz.getName(), false));
+  private static boolean isSubclassOf(JavaContext context, UExpression expression, Class<?> cls) {
+    PsiType expressionType = expression.getExpressionType();
+    if (expressionType instanceof PsiClassType) {
+      PsiClassType classType = (PsiClassType) expressionType;
+      PsiClass resolvedClass = classType.resolve();
+      return context.getEvaluator().extendsClass(resolvedClass, cls.getName(), false);
     }
     return false;
   }
 
   private static List<String> getStringArgumentTypes(String formatString) {
-    List<String> types = new ArrayList<String>();
+    List<String> types = new ArrayList<>();
     Matcher matcher = StringFormatDetector.FORMAT.matcher(formatString);
     int index = 0;
     int prevIndex = 0;
@@ -356,38 +428,17 @@ public final class WrongTimberUsageDetector extends Detector implements Detector
         if ("%%".equals(str) || "%n".equals(str)) {
           continue;
         }
-        types.add(matcher.group(6));
+        String time = matcher.group(5);
+        if ("t".equalsIgnoreCase(time)) {
+          types.add(time + matcher.group(6));
+        } else {
+          types.add(matcher.group(6));
+        }
       } else {
         break;
       }
     }
     return types;
-  }
-
-  private static String findLiteralValue(@NonNull JavaContext context, @NonNull Node argument) {
-    if (argument instanceof StringLiteral) {
-      return ((StringLiteral) argument).astValue();
-    } else if (argument instanceof BinaryExpression) {
-      BinaryExpression expression = (BinaryExpression) argument;
-      if (expression.astOperator() == BinaryOperator.PLUS) {
-        String left = findLiteralValue(context, expression.astLeft());
-        String right = findLiteralValue(context, expression.astRight());
-        if (left != null && right != null) {
-          return left + right;
-        }
-      }
-    } else {
-      JavaParser.ResolvedNode resolved = context.resolve(argument);
-      if (resolved instanceof JavaParser.ResolvedField) {
-        JavaParser.ResolvedField field = (JavaParser.ResolvedField) resolved;
-        Object value = field.getValue();
-        if (value instanceof String) {
-          return (String) value;
-        }
-      }
-    }
-
-    return null;
   }
 
   private static int getFormatArgumentCount(@NonNull String s) {
@@ -437,60 +488,272 @@ public final class WrongTimberUsageDetector extends Detector implements Detector
     return max;
   }
 
-  private static void checkThrowablePosition(JavaContext context, MethodInvocation node) {
-    int index = 0;
-    for (Node argument : node.astArguments()) {
-      if (checkNode(context, node, argument)) {
+  private void checkMethodArguments(JavaContext context, UCallExpression call) {
+    List<UExpression> arguments = call.getValueArguments();
+    int numArguments = arguments.size();
+    for (int i = 0; i < numArguments; i++) {
+      UExpression argument = arguments.get(i);
+      if (checkElement(context, call, argument)) {
         break;
       }
-      if (argument instanceof VariableReference) {
-        VariableReference variableReference = (VariableReference) argument;
-        if (isSubclassOf(context, variableReference, Throwable.class) && index > 0) {
-          context.report(ISSUE_THROWABLE, node, context.getLocation(node),
-              "Throwable should be first argument");
-        }
+      if (i > 0 && isSubclassOf(context, argument, Throwable.class)) {
+        LintFix fix = quickFixIssueThrowable(call, arguments, argument);
+        context.report(ISSUE_THROWABLE, call, context.getLocation(call),
+            "Throwable should be first argument", fix);
       }
-      index++;
     }
   }
 
-  private static boolean checkNode(JavaContext context, MethodInvocation node, Node argument) {
-    if (argument instanceof BinaryExpression) {
-      context.report(ISSUE_BINARY, node, context.getLocation(argument),
-          "Replace String concatenation with Timber's string formatting");
+  private void checkExceptionLogging(JavaContext context, UCallExpression call) {
+    List<UExpression> arguments = call.getValueArguments();
+    int numArguments = arguments.size();
+
+    if (numArguments > 1 && isSubclassOf(context, arguments.get(0), Throwable.class)) {
+      UExpression messageArg = arguments.get(1);
+
+      if (isLoggingExceptionMessage(context, messageArg)) {
+        context.report(ISSUE_EXCEPTION_LOGGING, messageArg, context.getLocation(call),
+            "Explicitly logging exception message is redundant",
+            quickFixRemoveRedundantArgument(messageArg));
+        return;
+      }
+
+      String s = evaluateString(context, messageArg, true);
+      if (s == null && !canEvaluateExpression(messageArg)) {
+        // Parameters and non-final fields can't be evaluated.
+        return;
+      }
+
+      if (s == null || s.isEmpty()) {
+        LintFix fix = quickFixRemoveRedundantArgument(messageArg);
+        context.report(ISSUE_EXCEPTION_LOGGING, messageArg, context.getLocation(call),
+            "Use single-argument log method instead of null/empty message", fix);
+      }
+    } else if (numArguments == 1 && !isSubclassOf(context, arguments.get(0), Throwable.class)) {
+      UExpression messageArg = arguments.get(0);
+
+      if (isLoggingExceptionMessage(context, messageArg)) {
+        context.report(ISSUE_EXCEPTION_LOGGING, messageArg, context.getLocation(call),
+            "Explicitly logging exception message is redundant",
+            quickFixReplaceMessageWithThrowable(messageArg));
+      }
+    }
+  }
+
+  private boolean isLoggingExceptionMessage(JavaContext context, UExpression arg) {
+    if (!(arg instanceof UQualifiedReferenceExpression)) {
+      return false;
+    }
+
+    UQualifiedReferenceExpression argExpression = (UQualifiedReferenceExpression) arg;
+    PsiElement psi = argExpression.getPsi();
+
+    if (psi != null && LintUtils.isKotlin(psi.getLanguage())) {
+      return isPropertyOnSubclassOf(context, argExpression, "message", Throwable.class);
+    }
+
+    UExpression selector = argExpression.getSelector();
+
+    // what other UExpressions could be a selector?
+    if (!(selector instanceof UCallExpression)) {
+      return false;
+    }
+
+    return isCallFromMethodInSubclassOf(context, (UCallExpression) selector, "getMessage",
+            Throwable.class);
+  }
+
+  private static boolean canEvaluateExpression(UExpression expression) {
+    // TODO - try using CallGraph?
+    if (expression instanceof ULiteralExpression) {
       return true;
-    } else if (argument instanceof If || argument instanceof InlineIfExpression) {
-      return checkConditionalUsage(context, node, argument);
+    }
+    if (!(expression instanceof USimpleNameReferenceExpression)) {
+      return false;
+    }
+    PsiElement resolvedElement = ((USimpleNameReferenceExpression) expression).resolve();
+    return !(resolvedElement instanceof PsiField || resolvedElement instanceof PsiParameter);
+  }
+
+  private static boolean isCallFromMethodInSubclassOf(JavaContext context, UCallExpression call,
+      String methodName, Class classType) {
+    JavaEvaluator evaluator = context.getEvaluator();
+    PsiMethod method = call.resolve();
+    return method != null //
+        && methodName.equals(call.getMethodName()) //
+        && evaluator.isMemberInSubClassOf(method, classType.getCanonicalName(), false);
+  }
+
+  private static boolean isPropertyOnSubclassOf(JavaContext context,
+          UQualifiedReferenceExpression expression, String propertyName, Class classType) {
+    return isSubclassOf(context, expression.getReceiver(), classType)
+            && expression.getSelector().asSourceString().equals(propertyName);
+  }
+
+  private boolean checkElement(JavaContext context, UCallExpression call, UElement element) {
+    if (element instanceof UBinaryExpression) {
+      UBinaryExpression binaryExpression = (UBinaryExpression) element;
+      UastBinaryOperator operator = binaryExpression.getOperator();
+      if (operator == PLUS || operator == PLUS_ASSIGN) {
+        Class argumentType = getType(binaryExpression);
+        if (argumentType == String.class) {
+          LintFix fix = quickFixIssueBinary(binaryExpression);
+          context.report(ISSUE_BINARY, call, context.getLocation(element),
+              "Replace String concatenation with Timber's string formatting", fix);
+          return true;
+        }
+      }
+    } else if (element instanceof UIfExpression) {
+      return checkConditionalUsage(context, call, element);
     }
     return false;
   }
 
-  private static boolean checkConditionalUsage(JavaContext context, MethodInvocation node,
-      Node arg) {
-    Node thenStatement;
-    Node elseStatement;
-    if (arg instanceof If) {
-      If ifArg = (If) arg;
-      thenStatement = ifArg.astStatement();
-      elseStatement = ifArg.astElseStatement();
-    } else if (arg instanceof InlineIfExpression) {
-      InlineIfExpression inlineIfArg = (InlineIfExpression) arg;
-      thenStatement = inlineIfArg.astIfFalse();
-      elseStatement = inlineIfArg.astIfTrue();
+  private boolean checkConditionalUsage(JavaContext context, UCallExpression call,
+      UElement element) {
+    UElement thenElement;
+    UElement elseElement;
+    if (element instanceof UIfExpression) {
+      UIfExpression ifArg = (UIfExpression) element;
+      thenElement = ifArg.getThenExpression();
+      elseElement = ifArg.getElseExpression();
     } else {
       return false;
     }
-    if (checkNode(context, node, thenStatement)) {
+    if (checkElement(context, call, thenElement)) {
       return false;
     }
-    return checkNode(context, node, elseStatement);
+    return checkElement(context, call, elseElement);
+  }
+
+  private LintFix quickFixIssueLog(UCallExpression logCall) {
+    List<UExpression> arguments = logCall.getValueArguments();
+    String methodName = logCall.getMethodName();
+    UExpression tag = arguments.get(0);
+
+    // 1st suggestion respects author's tag preference.
+    // 2nd suggestion drops it (Timber defaults to calling class name).
+    String fixSource1 = "Timber.tag(" + tag.asSourceString() + ").";
+    String fixSource2 = "Timber.";
+
+    int numArguments = arguments.size();
+    if (numArguments == 2) {
+      UExpression msgOrThrowable = arguments.get(1);
+      fixSource1 += methodName + "(" + msgOrThrowable.asSourceString() + ")";
+      fixSource2 += methodName + "(" + msgOrThrowable.asSourceString() + ")";
+    } else if (numArguments == 3) {
+      UExpression msg = arguments.get(1);
+      UExpression throwable = arguments.get(2);
+      fixSource1 +=
+          methodName + "(" + throwable.asSourceString() + ", " + msg.asSourceString() + ")";
+      fixSource2 +=
+          methodName + "(" + throwable.asSourceString() + ", " + msg.asSourceString() + ")";
+    } else {
+      throw new IllegalStateException("android.util.Log overloads should have 2 or 3 arguments");
+    }
+
+    String logCallSource = logCall.asSourceString();
+    LintFix.GroupBuilder fixGrouper = fix().group();
+    fixGrouper.add(
+        fix().replace().text(logCallSource).shortenNames().reformat(true).with(fixSource1).build());
+    fixGrouper.add(
+        fix().replace().text(logCallSource).shortenNames().reformat(true).with(fixSource2).build());
+    return fixGrouper.build();
+  }
+
+  private LintFix quickFixIssueFormat(UCallExpression stringFormatCall) {
+    // Handles:
+    // 1) String.format(..)
+    // 2) format(...) [static import]
+    UExpression callReceiver = stringFormatCall.getReceiver();
+    String callSourceString = callReceiver == null ? "" : callReceiver.asSourceString() + ".";
+    callSourceString += stringFormatCall.getMethodName();
+
+    return fix().name("Remove String.format(...)").composite() //
+        // Delete closing parenthesis of String.format(...)
+        .add(fix().replace().pattern(callSourceString + "\\(.*(\\))").with("").build())
+        // Delete "String.format("
+        .add(fix().replace().text(callSourceString + "(").with("").build()).build();
+  }
+
+  private LintFix quickFixIssueThrowable(UCallExpression call, List<UExpression> arguments,
+      UExpression throwable) {
+    String rearrangedArgs = throwable.asSourceString();
+    for (UExpression arg : arguments) {
+      if (arg != throwable) {
+        rearrangedArgs += (", " + arg.asSourceString());
+      }
+    }
+    return fix().replace() //
+        .pattern("\\." + call.getMethodName() + "\\((.*)\\)").with(rearrangedArgs).build();
+  }
+
+  private LintFix quickFixIssueBinary(UBinaryExpression binaryExpression) {
+    UExpression leftOperand = binaryExpression.getLeftOperand();
+    UExpression rightOperand = binaryExpression.getRightOperand();
+    boolean isLeftLiteral = isStringLiteral(leftOperand);
+    boolean isRightLiteral = isStringLiteral(rightOperand);
+
+    // "a" + "b" => "ab"
+    if (isLeftLiteral && isRightLiteral) {
+      return fix().replace() //
+          .text(binaryExpression.asSourceString())
+          .with("\"" + evaluateString(binaryExpression) + "\"")
+          .build();
+    }
+
+    String args;
+    if (isLeftLiteral) {
+      args = "\"" + evaluateString(leftOperand) + "%s\", " + rightOperand.asSourceString();
+    } else if (isRightLiteral) {
+      args = "\"%s" + evaluateString(rightOperand) + "\", " + leftOperand.asSourceString();
+    } else {
+      args = "\"%s%s\", " + leftOperand.asSourceString() + ", " + rightOperand.asSourceString();
+    }
+    return fix().replace().text(binaryExpression.asSourceString()).with(args).build();
+  }
+
+  private LintFix quickFixIssueTagLength(UExpression argument, String tag) {
+    int numCharsToTrim = tag.length() - 23;
+    return fix().replace()
+        .name("Strip last " + (numCharsToTrim == 1 ? "char" : numCharsToTrim + " chars"))
+        .text(argument.asSourceString())
+        .with("\"" + tag.substring(0, 23) + "\"")
+        .build();
+  }
+
+  private LintFix quickFixRemoveRedundantArgument(UExpression arg) {
+    return fix().replace()
+        .name("Remove redundant argument")
+        .text(", " + arg.asSourceString())
+        .with("")
+        .build();
+  }
+
+  private LintFix quickFixReplaceMessageWithThrowable(UExpression arg) {
+    // guaranteed based on callers of this method
+    UQualifiedReferenceExpression argExpression = (UQualifiedReferenceExpression) arg;
+    UExpression receiver = argExpression.getReceiver();
+
+    return fix().replace()
+        .name("Replace message with throwable")
+        .text(arg.asSourceString())
+        .with(receiver.asSourceString())
+        .build();
+  }
+
+  static Issue[] getIssues() {
+    return new Issue[] {
+        ISSUE_LOG, ISSUE_FORMAT, ISSUE_THROWABLE, ISSUE_BINARY, ISSUE_ARG_COUNT, ISSUE_ARG_TYPES,
+        ISSUE_TAG_LENGTH, ISSUE_EXCEPTION_LOGGING
+    };
   }
 
   public static final Issue ISSUE_LOG =
       Issue.create("LogNotTimber", "Logging call to Log instead of Timber",
           "Since Timber is included in the project, it is likely that calls to Log should instead"
               + " be going to Timber.", Category.MESSAGES, 5, Severity.WARNING,
-          new Implementation(WrongTimberUsageDetector.class, Scope.CLASS_FILE_SCOPE));
+          new Implementation(WrongTimberUsageDetector.class, Scope.JAVA_FILE_SCOPE));
   public static final Issue ISSUE_FORMAT =
       Issue.create("StringFormatInTimber", "Logging call with Timber contains String#format()",
           "Since Timber handles String.format automatically, you may not use String#format().",
@@ -517,8 +780,12 @@ public final class WrongTimberUsageDetector extends Detector implements Detector
               + " of the arguments that you passed to your formatting call.", Category.MESSAGES, 9,
           Severity.ERROR,
           new Implementation(WrongTimberUsageDetector.class, Scope.JAVA_FILE_SCOPE));
-  public static final Issue ISSUE_TAG_LENGTH =
-      Issue.create("TimberTagLength", "Too Long Log Tags", "Log tags are only allowed to be at most"
-              + " 23 tag characters long.", Category.CORRECTNESS, 5, Severity.ERROR,
+  public static final Issue ISSUE_TAG_LENGTH = Issue.create("TimberTagLength", "Too Long Log Tags",
+      "Log tags are only allowed to be at most" + " 23 tag characters long.", Category.CORRECTNESS,
+      5, Severity.ERROR, new Implementation(WrongTimberUsageDetector.class, Scope.JAVA_FILE_SCOPE));
+  public static final Issue ISSUE_EXCEPTION_LOGGING =
+      Issue.create("TimberExceptionLogging", "Exception Logging", "Explicitly including the"
+              + " exception message is redundant when supplying an exception to log.",
+          Category.CORRECTNESS, 3, Severity.WARNING,
           new Implementation(WrongTimberUsageDetector.class, Scope.JAVA_FILE_SCOPE));
 }

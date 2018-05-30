@@ -1,0 +1,64 @@
+apply plugin: 'com.github.ben-manes.versions'
+
+buildscript {
+  ext.versions = [
+      'minSdk': 9,
+      'compileSdk': 27,
+
+      'kotlin': '1.2.31',
+
+      'androidPlugin': '3.1.1',
+      'androidTools': '26.1.1',
+
+      'butterknife': '8.8.1',
+  ]
+
+  ext.deps = [
+      androidPlugin: "com.android.tools.build:gradle:${versions.androidPlugin}",
+      kotlinPlugin: "org.jetbrains.kotlin:kotlin-gradle-plugin:${versions.kotlin}",
+      'butterknife': [
+          'runtime': "com.jakewharton:butterknife:${versions.butterknife}",
+          'compiler': "com.jakewharton:butterknife-compiler:${versions.butterknife}"
+      ],
+      'lint': [
+          'core': "com.android.tools.lint:lint:${versions.androidTools}",
+          'api': "com.android.tools.lint:lint-api:${versions.androidTools}",
+          'checks': "com.android.tools.lint:lint-checks:${versions.androidTools}",
+          'tests': "com.android.tools.lint:lint-tests:${versions.androidTools}",
+      ],
+      annotations: 'org.jetbrains:annotations:16.0.1',
+
+      junit: 'junit:junit:4.12',
+      truth: 'com.google.truth:truth:0.40',
+      robolectric: 'org.robolectric:robolectric:3.8',
+  ]
+
+  repositories {
+    jcenter()
+    google()
+  }
+
+  dependencies {
+    classpath deps.androidPlugin
+    classpath deps.kotlinPlugin
+    classpath 'com.github.ben-manes:gradle-versions-plugin:0.17.0'
+  }
+}
+
+subprojects {
+  repositories {
+    mavenCentral()
+    jcenter()
+    google()
+  }
+
+  tasks.withType(Test) {
+    testLogging {
+      events "failed"
+      exceptionFormat "full"
+      showExceptions true
+      showStackTraces true
+      showCauses true
+    }
+  }
+}
